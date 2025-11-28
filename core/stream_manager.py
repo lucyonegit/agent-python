@@ -48,6 +48,15 @@ class StreamManager:
     def add_handler(self, handler: Callable[[StreamEvent], None]) -> None:
         self._handlers.append(handler)
 
+def with_streaming(fn, stream_manager: StreamManager):
+    async def wrapper(*args, **kwargs):
+        stream_manager.start_stream()
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            stream_manager.end_stream()
+    return wrapper
+
 def create_console_stream_handler(prefix: str = '[STREAM]') -> Callable[[StreamEvent], None]:
     type_colors = {
         'normal_event': '\x1b[36m',
@@ -60,4 +69,3 @@ def create_console_stream_handler(prefix: str = '[STREAM]') -> Callable[[StreamE
         color = type_colors.get(event.event.get('type', ''), '\x1b[37m')
         print(f"{prefix} {ts} {color}[{event.event.get('type','').upper()}]\x1b[0m", event.event)
     return handle
-

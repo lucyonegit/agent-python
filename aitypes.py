@@ -28,6 +28,7 @@ class AgentConfig:
     language: Literal['auto', 'chinese', 'english'] = 'auto'
     pauseAfterEachStep: bool = False
     autoPlanOnStart: bool = True
+    autoGenerateFinalAnswer: bool = True
     strictActionUntilDone: bool = True
 
 @dataclass

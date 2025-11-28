@@ -2,6 +2,8 @@ import json
 from typing import List, Dict, Any
 from core.llm import BaseChatModel
 from coder_agent.config.prompt import CODING_AGENT_PROMPTS
+from aitypes import AgentConfig
+from coder_agent.architect.architect_generator import ArchitectGenerator
 
 class CodeGenerator:
     def __init__(self, llm: BaseChatModel):
@@ -9,13 +11,22 @@ class CodeGenerator:
         self._rag_sources: List[Dict[str, Any]] = []
         self._rag_keys = set()
 
-    async def generate(self, bdd_scenarios: str, options: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def generate(self, config: AgentConfig, bdd_scenarios: str, options: Dict[str, Any] = None) -> Dict[str, Any]:
         options = options or {}
         if options.get('onThought'): options['onThought']('Thought: 启动代码生成流程')
-        if options.get('onThought'): options['onThought']('Thought: 从BDD场景中提取潜在组件关键词用于检索')
+        if options.get('onThought'): options['onThought']('Action: 生成基础项目架构')
+        options.get('onArchitectLog') and options['onArchitectLog']('开始调用 ArchitectGenerator 生成基础架构')
+        arch = ArchitectGenerator(self.llm, config)
+        base_arch = await arch.generate(bdd_scenarios, { 'onStream': options.get('onArchitectStream'), 'onLog': options.get('onArchitectLog') })
+        base_arch = base_arch.strip() if base_arch else '[]'
+        options.get('onArchitectLog') and options['onArchitectLog']('基础架构生成完成，长度: ' + str(len(base_arch)))
+        options.get('onArchitecture') and options['onArchitecture'](base_arch)
+        if options.get('onThought'): options['onThought']('Thought: 从BDD输入（支持 Feature 分组）中提取潜在组件关键词用于检索')
         kw_start = self._now()
         if options.get('onToolCall'): options['onToolCall']({ 'id': f'tool_extract_keywords_{kw_start}', 'status': 'start', 'tool_name': 'extract_keywords', 'args': { 'input': 'bdd_scenarios' }, 'startedAt': kw_start })
-        keywords = await self._extract_keywords(bdd_scenarios)
+        kw_bdd = await self._extract_keywords(bdd_scenarios)
+        kw_arch = await self._extract_keywords(base_arch)
+        keywords = list(dict.fromkeys([*(kw_bdd or []), *(kw_arch or [])]))
         kw_end = self._now()
         if options.get('onToolCall'): options['onToolCall']({ 'id': f'tool_extract_keywords_{kw_start}', 'status': 'end', 'tool_name': 'extract_keywords', 'args': { 'input': 'bdd_scenarios' }, 'result': { 'keywords': keywords }, 'success': True, 'startedAt': kw_start, 'finishedAt': kw_end, 'durationMs': kw_end - kw_start })
         if options.get('onThought'): options['onThought']('Action: 获取可用内部组件列表')
@@ -34,7 +45,7 @@ class CodeGenerator:
         rag_context = await self._fetch_component_docs(selected, options)
         if options.get('onRagSources'): options['onRagSources'](self.get_rag_sources())
         if options.get('onThought'): options['onThought']('Observation: 已获取组件API与示例文档，开始代码生成')
-        prompt = CODING_AGENT_PROMPTS['CODE_GENERATOR_PROMPT'].replace('{bdd_scenarios}', bdd_scenarios).replace('{rag_context}', rag_context)
+        prompt = CODING_AGENT_PROMPTS['CODE_GENERATOR_PROMPT'].replace('{bdd_scenarios}', bdd_scenarios).replace('{base_architecture}', base_arch).replace('{rag_context}', rag_context)
         messages = [ { 'role': 'system', 'content': CODING_AGENT_PROMPTS['SYSTEM_PERSONA'] }, { 'role': 'user', 'content': prompt } ]
         gen_start = self._now()
         if options.get('onToolCall'): options['onToolCall']({ 'id': f'tool_llm_generate_{gen_start}', 'status': 'start', 'tool_name': 'llm_generate_project', 'args': { 'model': 'chat', 'inputs': ['persona', 'prompt'] }, 'startedAt': gen_start })
@@ -48,7 +59,8 @@ class CodeGenerator:
             s = m.group(1) if m else content
             project = json.loads(s)
             try:
-                matches = await self._compute_scenario_matches(bdd_scenarios, [f.get('path') for f in project.get('files', [])])
+                flattened = self._flatten_features_to_scenarios(bdd_scenarios)
+                matches = await self._compute_scenario_matches(flattened, [f.get('path') for f in project.get('files', [])])
                 if options.get('onScenarioMatches') and matches:
                     options['onScenarioMatches'](matches)
             except Exception:
@@ -66,6 +78,21 @@ class CodeGenerator:
         resp = await self.llm.invoke([ { 'role': 'user', 'content': prompt } ])
         content = resp.get('content') or ''
         return [s.strip() for s in content.split(',') if s.strip()]
+
+    def _flatten_features_to_scenarios(self, input_str: str) -> str:
+        try:
+            data = json.loads(input_str)
+            if isinstance(data, list) and data and isinstance(data[0], dict) and ('scenarios' in data[0]):
+                scenarios = []
+                for f in data:
+                    if isinstance(f, dict) and isinstance(f.get('scenarios'), list):
+                        scenarios.extend(f.get('scenarios'))
+                return json.dumps(scenarios, ensure_ascii=False)
+            if isinstance(data, list):
+                return json.dumps(data, ensure_ascii=False)
+        except Exception:
+            pass
+        return input_str
 
     async def _fetch_available_components(self) -> List[str]:
         import os

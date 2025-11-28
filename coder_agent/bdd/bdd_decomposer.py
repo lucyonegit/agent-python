@@ -19,7 +19,12 @@ class BDDDecomposer:
             m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
             s = m.group(1) if m else content
             arr = json.loads(s)
-            return arr if isinstance(arr, list) else []
+            if isinstance(arr, list):
+                looks_like_feature = (len(arr) == 0) or (isinstance(arr[0], dict) and ('scenarios' in arr[0] or 'feature_id' in arr[0] or 'feature_title' in arr[0]))
+                if looks_like_feature:
+                    return arr
+                scenarios = arr
+                return [ { 'feature_id': 'feature_1', 'feature_title': 'General', 'description': '', 'scenarios': scenarios } ]
+            return []
         except Exception:
-            return [{ 'id': 'scenario_1', 'title': 'Fallback scenario', 'given': ['User opens the page'], 'when': ['User interacts with the component'], 'then': ['Expected UI updates occur'] }]
-
+            return [ { 'feature_id': 'feature_1', 'feature_title': 'General', 'description': '', 'scenarios': [ { 'id': 'scenario_1', 'title': 'Fallback scenario', 'given': ['User opens the page'], 'when': ['User enters valid input'], 'then': ['Expected UI updates occur'] } ] } ]

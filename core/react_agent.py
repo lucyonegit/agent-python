@@ -121,9 +121,11 @@ class ReActAgent:
                         changed = changed or advanced or done_now
                     if changed:
                         self.emit_plan_update(session_id, conversation_id, on_stream, True)
-                    self.emit('normal', { 'content': '**准备答案** - 已收集足够信息，正在生成最终答案...' }, session_id, conversation_id, f"prepare_answer_{iteration}", on_stream)
-                    final_answer = await self.generate_final_answer(context, on_stream, conversation_id, session_id)
-                    return { 'finalAnswer': final_answer, 'isPaused': False }
+                    if self.config.autoGenerateFinalAnswer:
+                        self.emit('normal', { 'content': '**准备答案** - 已收集足够信息，正在生成最终答案...' }, session_id, conversation_id, f"prepare_answer_{iteration}", on_stream)
+                        final_answer = await self.generate_final_answer(context, on_stream, conversation_id, session_id)
+                        return { 'finalAnswer': final_answer, 'isPaused': False }
+                    return { 'finalAnswer': react_result.get('content',''), 'isPaused': False }
                 if react_result['type'] == 'action':
                     if react_result.get('toolName') == 'wait_for_user_input':
                         self.session_states[session_id] = SessionState(context=context, currentIteration=iteration+1, sessionId=session_id, conversationId=conversation_id, isPaused=True, waitingReason=(react_result.get('toolInput') or {}).get('reason') or '需要更多信息')
@@ -142,7 +144,10 @@ class ReActAgent:
                     await self.generate_observation(tool_result, react_result.get('toolName'), on_stream, conversation_id, session_id, iteration)
                     if tool_result.get('success'):
                         has_change = self.mark_current_step_done(f"✅ 已使用 {react_result.get('toolName')}")
-                        tasks = (tool_result.get('result') or {}).get('tasks') or ((tool_result.get('result') or {}).get('plan') or {}).get('steps')
+                        result_obj = tool_result.get('result')
+                        tasks = None
+                        if isinstance(result_obj, dict):
+                            tasks = result_obj.get('tasks') or ((result_obj.get('plan') or {}) if isinstance(result_obj.get('plan'), dict) else {}).get('steps')
                         if isinstance(tasks, list) and tasks:
                             try:
                                 steps = [TaskStep(id=s.get('id') or f"plan_{i+1}", title=s.get('title'), status='pending') for i, s in enumerate(tasks)]
@@ -150,8 +155,10 @@ class ReActAgent:
                                 has_change = True
                             except Exception:
                                 pass
-                        plan_update = (tool_result.get('result') or {}).get('planUpdate')
-                        if plan_update:
+                        plan_update = None
+                        if isinstance(result_obj, dict):
+                            plan_update = result_obj.get('planUpdate')
+                        if isinstance(plan_update, dict):
                             before = json.dumps([p.__dict__ for p in self.plan_list], ensure_ascii=False)
                             complete_ids = plan_update.get('completeIds') or []
                             complete_titles = plan_update.get('completeTitles') or []
